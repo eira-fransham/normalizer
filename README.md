@@ -10,6 +10,11 @@ tracks, and while I am currently testing using it for my entire library it is re
 you try it for individual tracks or albums and listen through the tracks before playing them
 in a set.
 
+## Installation
+
+You will need `ffmpeg`, the python library `ffmpeg_normalize` (install with `pip3 install ffmpeg-normalize`),
+and `cargo` (see [rustup](https://rustup.rs/))
+
 ## Details
 
 We first detect the integrated loudness of the whole track, along with the IPR (inter-percentile
@@ -27,7 +32,8 @@ loudness, but works in overlapping chunks and so can better-handle much-quieter 
 
 These three steps - the compressor, `loudnorm` and `dynaudnorm`, work together to approximately
 equalise loudness and dynamic range. However, by themselves they can't get the level of loudness
-expected for modern tracks.
+expected for modern tracks - `loudnorm` is intended to reduce the volume of tracks, not increase it,
+and `dynaudnorm` is intended to handle dynamic range, not overall loudness.
 
 The final step is to scale the track, using a heuristic that attempts to balance peak normalisation
 along with trying to scale the instantaneous loudness to a configurable value (defaulting to -12dB).
