@@ -1,0 +1,15 @@
+[package]
+name = "normalizer"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+clap = { version = "4.5", features = ["derive"] }
+hound = "3.5"
+itertools = "0.13"
+tempfile = "3.10"
+lufs = "0.1"
+bs1770 = "1.0"
+rodio = "0.19"
