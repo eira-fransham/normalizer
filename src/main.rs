@@ -40,7 +40,7 @@ struct Cli {
     target_lower: f32,
     #[arg(short, long, default_value_t = 0.1)]
     trim_amt: f32,
-    #[arg(long, default_value_t = -1.)]
+    #[arg(long, default_value_t = -0.1)]
     headroom: f32,
     /// Whether to force-overwrite the final output file
     #[arg(short, long)]
@@ -51,6 +51,9 @@ struct Cli {
     /// If true, we always enable `dynaudnorm`
     #[arg(short, long)]
     dynaudnorm: bool,
+    /// Ratio to upsample the audio to
+    #[arg(short, long, default_value_t = 4)]
+    resample_amt: u32,
     /// The lower threshold for integrated loudness compared to target after an iteration to enable `dynaudnorm`.
     /// `dynaudnorm` may introduce artefacts but can be useful to reduce whole-track dynamics.
     /// Setting this to 0 or more disables, as it is only intended to reduce dynamics (and
@@ -68,6 +71,7 @@ impl Cli {
             target_instantaneous: self.target_instantaneous(),
             headroom: self.headroom,
             trim_amt: self.trim_amt,
+            resample_ratio: self.resample_amt.max(1),
         }
     }
 
@@ -159,6 +163,8 @@ struct Params {
     headroom: f32,
     /// Proportion of high/low outliers to trim from loudness range calculations
     trim_amt: f32,
+    /// Ratio to upsample the audio to
+    resample_ratio: u32,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -237,6 +243,7 @@ struct Stats {
     min_instantaneous: f32,
     max_instantaneous: f32,
     peak: f32,
+    sample_rate: u32,
 }
 
 impl Display for Stats {
@@ -297,6 +304,7 @@ fn stats<R: BufRead + Seek + Send + Sync + 'static>(
         min_instantaneous,
         max_instantaneous,
         peak,
+        sample_rate,
     })
 }
 
@@ -307,13 +315,13 @@ fn process(
     dynaudnorm: bool,
 ) -> io::Result<ProcessResult> {
     let input_stats @ Stats {
-        name: _,
         integrated,
         min_momentary,
         max_momentary,
         min_instantaneous,
         max_instantaneous,
-        peak: _,
+        sample_rate,
+        ..
     } = stats(
         "Input",
         BufReader::new(File::open(&input_file)?),
@@ -337,6 +345,7 @@ fn process(
 
     let headroom_amp = db_to_amp(params.headroom);
 
+    let upsampled_rate = sample_rate * params.resample_ratio;
     let input_path = format!("{}", input_file.display());
     let output_path = format!("{}", compressed.display());
     let lower_bound = min_momentary - 20.;
@@ -355,10 +364,16 @@ fn process(
         (max_momentary, target_upper),
         (max_instantaneous, target_instantaneous),
     ];
-    let (mut compressor_from, mut compressor_to): (Vec<_>, Vec<_>) =
-        <_>::into_iter(compressor_points).unzip();
-    compressor_from.sort_unstable_by(|x, y| x.partial_cmp(&y).unwrap());
-    compressor_to.sort_unstable_by(|x, y| x.partial_cmp(&y).unwrap());
+    let mut last = (f32::NEG_INFINITY, f32::NEG_INFINITY);
+    let compressor_points = compressor_points.into_iter().filter(|(left, right)| {
+        if *left > last.0 && *right > last.1 {
+            last = (*left, *right);
+            true
+        } else {
+            false
+        }
+    });
+    let (compressor_from, compressor_to): (Vec<_>, Vec<_>) = compressor_points.unzip();
     let compressor_points = compressor_from
         .into_iter()
         .zip(compressor_to)
@@ -366,7 +381,7 @@ fn process(
         .collect::<Vec<_>>();
     let compressor_params = compressor_points.join("|");
     let mut compressor = Command::new("ffmpeg");
-    let dynaudnorm_headroom = -6.;
+    let dynaudnorm_headroom = db_to_amp(-6.);
     let compressor = compressor.args([
         "-hide_banner",
         "-loglevel",
@@ -377,11 +392,11 @@ fn process(
         "-filter_complex",
         &if dynaudnorm {
             format!(
-                "compand=.3|.3:.3|.3:{compressor_params}:3:0.3:{lower_bound},\
-                dynaudnorm=g=51:m=1.5:r={dynaudnorm_headroom}:c=1:b=1",
+                "aresample={upsampled_rate},compand=.3|.3:.3|.3:{compressor_params}:3:0.3:{lower_bound},\
+                dynaudnorm=g=97:m=1.5:r={dynaudnorm_headroom:.3}:o=0.1:c=1:b=1,aresample={sample_rate}"
             )
         } else {
-            format!("compand=.3|.3:.3|.3:{compressor_params}:3:0.3:{lower_bound}",)
+            format!("aresample={upsampled_rate},compand=.3|.3:.3|.3:{compressor_params}:3:0.3:{lower_bound},aresample={sample_rate}")
         },
         &output_path,
     ]);
@@ -391,13 +406,13 @@ fn process(
     }
 
     let compressed_stats @ Stats {
-        name: _,
         integrated,
-        min_momentary: _,
         max_momentary,
         min_instantaneous: _,
         max_instantaneous,
         peak,
+        sample_rate,
+        ..
     } = stats(
         "Compressed",
         BufReader::new(File::open(&compressed)?),
@@ -432,6 +447,7 @@ fn process(
     }
 
     let mut limiter = Command::new("ffmpeg");
+    let upsampled_rate = sample_rate * params.resample_ratio;
     let limiter = limiter.args([
             "-hide_banner",
             "-loglevel",
@@ -441,7 +457,7 @@ fn process(
             &format!("{}", compressed.display()),
             "-filter_complex",
             &format!(
-                "volume={required_amp},compand=attacks=0.01:points=-80/-80|-12.4/-12.4|0/0|20/0:soft-knee=2:delay=0.01,compand=attacks=0:points=-80/-80|-12.4/-12.4|-2/-1|-1/-0.5|0/0|20/0,volume={headroom_amp}",
+                "volume={required_amp},aresample={upsampled_rate},compand=attacks=0.01:points=-80/-80|-12.4/-12.4|0/0|20/0:soft-knee=2:delay=0.01,compand=attacks=0:points=-80/-80|-12.4/-12.4|-2/-1|-1/-0.5|0/0|20/0,aresample={sample_rate},volume={headroom_amp}",
             ),
             &format!("{}", output_file.display()),
         ]);
@@ -454,13 +470,13 @@ fn process(
     std::fs::remove_file(compressed).unwrap();
 
     let Stats {
-        name: _,
         integrated,
         min_momentary,
         max_momentary,
         min_instantaneous,
         max_instantaneous,
         peak,
+        ..
     } = stats(
         "Final",
         BufReader::new(File::open(output_file)?),
@@ -573,6 +589,7 @@ fn main() {
                 mem::swap(&mut buffer_a, &mut buffer_b);
                 false
             } else {
+                println!("Greater error than previous step, reverting");
                 true
             };
 
