@@ -25,6 +25,14 @@ attempt to handle the frequency distribution of a track (e.g. normalising tracks
 vs tracks with much less), as `mcompand` (`ffmpeg`'s multiband compressor) appears to be bugged and
 produces extremely ugly artifacts no matter the settings.
 
+For comparison, here is an older track mastered pretty quietly that I've had trouble playing in sets
+because the dynamics didn't match the loud hard house and rave music that I usually play. The settings
+used are relatively extreme because it needs to match the dynamics of the rest of my playlist - which
+have loud, aggressive masters.
+
+![Before](assets/winditup-before.png)
+![After](assets/winditup-after.png)
+
 ## Installation
 
 You will need `ffmpeg` (see [their website](https://ffmpeg.org/)) and `cargo` (see [rustup](https://rustup.rs/))
