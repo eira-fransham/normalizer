@@ -4,11 +4,26 @@
 DJs who play older tracks and/or tracks across many genres. Not intended for non-dance music
 genres, but should work well enough for them anyway.
 
-This works by combining many FFMPEG filters, tweaking their parameters according to various
-statistics detected directly from the tracks. This program _will_ change the sound of your
-tracks, and while I am currently testing using it for my entire library it is recommended that
-you try it for individual tracks or albums and listen through the tracks before playing them
-in a set.
+This works by configuring some limiters and compressors in `ffmpeg` based on the detected
+[perceptual loudness](https://en.wikipedia.org/wiki/Loudness) of the track across various
+time periods. It works completely differently from [`ffmpeg-normalize`](https://github.com/slhck/ffmpeg-normalize),
+which is intended to preserve the waveform, only scaling it down so that different tracks are the same
+overall loudness when the whole track is measured. This program _will_ change the sound of your tracks.
+While `ffmpeg-normalize` is intended to trust the master that is given to it and only prevent you
+from needing to adjust your volume when putting many tracks in a playlist, this tool is intended to
+take tracks mastered in many different styles with different loudness profiles across the track and
+optimise dynamics for club play. It uses compression and limiting to remaster the track, giving you a
+reasonable baseline to make mixing tracks and making mashups much easier. It can also
+
+It can also be used as a quick-and-dirty way to master unmastered tracks for club play, without using
+an AI service like LANDR.  I have tried it on unmastered tracks and it does appear to work pretty well,
+producing masters that are at least reasonably listenable. For one of the tracks I tried from my album,
+it produced something that actually sounds better on my phone speakers than the professional master due
+to the reduced dynamic range, although on better speakers the transients are too loud and it's obviously
+not even close to the quality of a professional master - nor is it intended to be. It currently makes no
+attempt to handle the frequency distribution of a track (e.g. normalising tracks that have much more bass
+vs tracks with much less), as `mcompand` (`ffmpeg`'s multiband compressor) appears to be bugged and
+produces extremely ugly artifacts no matter the settings.
 
 ## Installation
 
@@ -52,11 +67,4 @@ never be a replacement for manually remastering a track and certainly it's no re
 a better master of the track to begin with, but it should be good enough and do a better job than LANDR
 (since LANDR isn't built to handle already-mastered tracks).
 
-_This tool is not intended to be used to automatically master unmastered tracks_, however, I have tried
-it as a quick-and-dirty mastering tool and it does appear to work pretty well, producing masters that
-are at least reasonably listenable. For one of the tracks I tried from my album, it produced something
-that actually sounds better on my phone speakers than the professional master due to the reduced dynamic
-range, although on better speakers the transients are too loud and it's obviously not even close to the
-quality of a professional master - nor is it intended to be. It currently makes no attempt to handle the
-frequency distribution of a track, as `mcompand` (`ffmpeg`'s multiband compressor) appears to be bugged
-and produces extremely ugly artifacts.
+_This tool is not intended to be used to automatically master unmastered tracks_, however, 
