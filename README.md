@@ -111,6 +111,3 @@ In general, this tool needs extensive battle-testing by being used on real track
 never be a replacement for manually remastering a track and certainly it's no replacement for just getting
 a better master of the track to begin with, but it should be good enough and do a better job than LANDR
 (since LANDR isn't built to handle already-mastered tracks).
-
-_This tool is not intended to be used to automatically master unmastered tracks_, however, 
-
