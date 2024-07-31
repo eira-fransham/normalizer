@@ -271,6 +271,7 @@ fn stats<R: BufRead + Seek + Send + Sync + 'static>(
     trim_amt_peak: f32,
 ) -> Result<Stats, DecoderError> {
     let source = Decoder::new(file)?;
+    let sample_rate = source.sample_rate();
     let channels = source.channels();
     let mut mono =
         rodio::source::ChannelVolume::new(source.convert_samples(), vec![0.5; channels as usize])

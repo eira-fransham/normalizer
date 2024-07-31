@@ -2,6 +2,9 @@
 name = "normalizer"
 version = "0.1.0"
 edition = "2021"
+description = "Automatic remastering CLI program intended for DJs who play a lot of different genres or older tracks that have inconsistent masters"
+license = "MIT"
+repository = "https://github.com/eira-fransham/normalizer"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
