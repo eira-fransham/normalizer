@@ -29,6 +29,51 @@ produces extremely ugly artifacts no matter the settings.
 
 You will need `ffmpeg` (see [their website](https://ffmpeg.org/)) and `cargo` (see [rustup](https://rustup.rs/))
 
+## Usage
+
+You can either run from source with `cargo run --release -- [args..]` or use `cargo install normalizer` and then
+run `normalizer [args..]`. If running from source, `--release` is important! The loudness analysis will be extremely slow
+without it. The most-common usecase would be `cargo run --release -- <input> -o <output>`. Currently this is not
+tested on Windows - it calls out to `ffmpeg` which will probably fail on Windows due to the lack of the `.exe` extension.
+I might switch to using the `ffmpeg` bindings for Rust instead of calling out to the CLI program in order to avoid this.
+
+```
+Usage: normalizer [OPTIONS] <FILE>
+
+Arguments:
+  <FILE>  Path to audio file
+
+Options:
+  -o, --output <OUTPUT>
+          Output file (if not specified, report loudness)
+      --max-iterations <MAX_ITERATIONS>
+          Max interations to try (in case the loudness is still too far from the target) [default: 2]
+      --target-integrated <TARGET_INTEGRATED>
+          Target integrated loudness (in LUFS) [default: -10]
+      --momentary-offset <MOMENTARY_OFFSET>
+          Target upper bound momentary loudness offset from upper bound (in LUFS) [default: 1]
+      --instantaneous-offset <INSTANTANEOUS_OFFSET>
+          Target instantaneous loudness offset from upper bound (in LUFS) [default: 2]
+      --target-lower <TARGET_LOWER>
+          Target lower bound momentary loudness (in LUFS) [default: -18]
+  -t, --trim-amt <TRIM_AMT>
+          [default: 0.1]
+      --headroom <HEADROOM>
+          [default: -1]
+  -f, --force
+          Whether to force-overwrite the final output file
+      --max-error <MAX_ERROR>
+          If any of the volume levels are this far away from the target, we run the process again [default: 1]
+  -d, --dynaudnorm
+          If true, we always enable `dynaudnorm`
+      --dynaudnorm-threshold <DYNAUDNORM_THRESHOLD>
+          The lower threshold for integrated loudness compared to target after an iteration to enable `dynaudnorm`. `dynaudnorm` may introduce artefacts but can be useful to reduce whole-track dynamics. Setting this to 0 or more disables, as it is only intended to reduce dynamics (and therefore boost integrated loudness compared to momentary loudness) [default: 0]
+  -h, --help
+          Print help
+  -V, --version
+          Print version
+```
+
 ## Details
 
 We first detect the integrated loudness of the whole track, along with the IPR (inter-percentile
@@ -68,3 +113,4 @@ a better master of the track to begin with, but it should be good enough and do 
 (since LANDR isn't built to handle already-mastered tracks).
 
 _This tool is not intended to be used to automatically master unmastered tracks_, however, 
+
