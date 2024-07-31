@@ -297,7 +297,6 @@ fn stats<R: BufRead + Seek + Send + Sync + 'static>(
         min_instantaneous,
         max_instantaneous,
         peak,
-        non_finite_samples,
     })
 }
 
@@ -315,7 +314,6 @@ fn process(
         min_instantaneous,
         max_instantaneous,
         peak: _,
-        non_finite_samples,
     } = stats(
         "Input",
         BufReader::new(File::open(&input_file)?),
@@ -323,10 +321,6 @@ fn process(
         0.0001,
     )
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    if cfg!(debug_assertions) {
-        eprintln!("Num non-finite samples (input): {}", non_finite_samples);
-    }
 
     let required_amp = lufs_multiplier(integrated, params.target_instantaneous).max(1.);
     let required_amp_db = amp_to_db(required_amp);
@@ -404,7 +398,6 @@ fn process(
         min_instantaneous: _,
         max_instantaneous,
         peak,
-        non_finite_samples,
     } = stats(
         "Compressed",
         BufReader::new(File::open(&compressed)?),
@@ -412,13 +405,6 @@ fn process(
         0.0001,
     )
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    if cfg!(debug_assertions) {
-        eprintln!(
-            "Num non-finite samples (compressed): {}",
-            non_finite_samples
-        );
-    }
 
     let max_amp = 1. / (peak * headroom_amp);
     let desired_amp_inst = lufs_multiplier(max_instantaneous, params.target_instantaneous);
@@ -475,7 +461,6 @@ fn process(
         min_instantaneous,
         max_instantaneous,
         peak,
-        non_finite_samples,
     } = stats(
         "Final",
         BufReader::new(File::open(output_file)?),
@@ -483,10 +468,6 @@ fn process(
         0.0001,
     )
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
-
-    if cfg!(debug_assertions) {
-        eprintln!("Num non-finite samples (output): {}", non_finite_samples);
-    }
 
     println!(
         "Final adjusted loudness (integrated): {:.2}LUFS",
