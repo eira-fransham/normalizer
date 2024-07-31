@@ -519,7 +519,7 @@ fn temp_wav() -> io::Result<PathBuf> {
     Ok(out.with_extension("wav"))
 }
 
-fn convert(input: &Path, output: &Path, force: bool) -> io::Result<()> {
+fn convert(metadata: Option<&Path>, input: &Path, output: &Path, force: bool) -> io::Result<()> {
     let mut converter = Command::new("ffmpeg");
 
     let mut converter = if force {
@@ -536,6 +536,32 @@ fn convert(input: &Path, output: &Path, force: bool) -> io::Result<()> {
         "-i",
         &format!("{}", input.display()),
     ]);
+
+    if let Some(meta) = metadata {
+        converter = converter.args([
+            "-i",
+            &format!("{}", meta.display()),
+            "-map",
+            "0:a",
+            "-map",
+            "1:v",
+            "-id3v2_version",
+            "3",
+            "-write_id3v2",
+            "1",
+            "-map_metadata:s:a",
+            "1:s:a",
+            "-map_metadata:s:v",
+            "1:s:v",
+            "-map_metadata:g",
+            "1:g",
+            "-map_metadata",
+            "1",
+            "-c:v",
+            "copy",
+        ]);
+    }
+
     if output.extension() == Some("mp3".as_ref()) {
         converter = converter.args(["-c:a", "libmp3lame", "-q:a", "0"]);
     }
@@ -566,7 +592,7 @@ fn main() {
                 (cli.file.clone(), temp_wav().unwrap(), false)
             } else {
                 let buffer_a = temp_wav().unwrap();
-                convert(&cli.file, &buffer_a, false).unwrap();
+                convert(None, &cli.file, &buffer_a, false).unwrap();
                 (buffer_a, temp_wav().unwrap(), true)
             };
 
@@ -610,7 +636,7 @@ fn main() {
             }
         }
 
-        convert(&buffer_a, &output, cli.force).unwrap();
+        convert(Some(&cli.file), &buffer_a, &output, cli.force).unwrap();
 
         assert_ne!(buffer_a, cli.file);
         fs::remove_file(&buffer_a).unwrap();
