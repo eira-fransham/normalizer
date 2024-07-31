@@ -1,3 +1,5 @@
+#![doc(include = "README.md")]
+
 use bs1770::{ChannelLoudnessMeter, Power, Windows100ms};
 use clap::Parser;
 use itertools::Itertools as _;
@@ -165,7 +167,6 @@ struct ProcessResult {
     min_momentary_error: f32,
     max_momentary_error: f32,
     instantaneous_error: f32,
-    stats: Stats,
 }
 
 impl Display for ProcessResult {
@@ -238,7 +239,6 @@ struct Stats {
     peak: f32,
     /// Number of non-finite samples in the input
     non_finite_samples: usize,
-    sample_rate: u32,
 }
 
 impl Display for Stats {
@@ -271,7 +271,6 @@ fn stats<R: BufRead + Seek + Send + Sync + 'static>(
     trim_amt_peak: f32,
 ) -> Result<Stats, DecoderError> {
     let source = Decoder::new(file)?;
-    let sample_rate = source.sample_rate();
     let channels = source.channels();
     let mut mono =
         rodio::source::ChannelVolume::new(source.convert_samples(), vec![0.5; channels as usize])
@@ -301,7 +300,6 @@ fn stats<R: BufRead + Seek + Send + Sync + 'static>(
         max_instantaneous,
         peak,
         non_finite_samples,
-        sample_rate,
     })
 }
 
@@ -318,9 +316,8 @@ fn process(
         max_momentary,
         min_instantaneous,
         max_instantaneous,
-        peak,
+        peak: _,
         non_finite_samples,
-        sample_rate: _,
     } = stats(
         "Input",
         BufReader::new(File::open(&input_file)?),
@@ -410,7 +407,6 @@ fn process(
         max_instantaneous,
         peak,
         non_finite_samples,
-        sample_rate: _,
     } = stats(
         "Compressed",
         BufReader::new(File::open(&compressed)?),
@@ -482,7 +478,6 @@ fn process(
         max_instantaneous,
         peak,
         non_finite_samples,
-        sample_rate: _,
     } = stats(
         "Final",
         BufReader::new(File::open(output_file)?),
@@ -520,7 +515,6 @@ fn process(
         max_momentary_error: max_momentary - params.headroom - params.target_momentary,
         min_momentary_error: min_momentary - params.headroom - params.target_lower,
         instantaneous_error: max_instantaneous - params.headroom - params.target_instantaneous,
-        stats,
     })
 }
 
