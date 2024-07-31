@@ -1,4 +1,4 @@
-#![doc(include = "README.md")]
+#![doc(include_str = "README.md")]
 
 use bs1770::{ChannelLoudnessMeter, Power, Windows100ms};
 use clap::Parser;
@@ -237,8 +237,6 @@ struct Stats {
     min_instantaneous: f32,
     max_instantaneous: f32,
     peak: f32,
-    /// Number of non-finite samples in the input
-    non_finite_samples: usize,
 }
 
 impl Display for Stats {
@@ -288,7 +286,6 @@ fn stats<R: BufRead + Seek + Send + Sync + 'static>(
     let (min_instantaneous, max_instantaneous) =
         get_rms_range(loudness_meter.as_100ms_windows(), 400, trim_amt_loudness);
 
-    let mut non_finite_samples = 0;
     let (low_peak, high_peak) = get_range_without_outliers(&mut mono, trim_amt_peak);
     let peak = low_peak.abs().min(high_peak.abs());
 
@@ -470,7 +467,7 @@ fn process(
 
     std::fs::remove_file(compressed).unwrap();
 
-    let stats @ Stats {
+    let Stats {
         name: _,
         integrated,
         min_momentary,
