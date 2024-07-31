@@ -428,23 +428,21 @@ fn process(
 
     let max_amp = 1. / (peak * headroom_amp);
     let desired_amp_inst = lufs_multiplier(max_instantaneous, params.target_instantaneous);
-    let desired_amp_mom = lufs_multiplier(max_momentary, params.target_momentary);
-    let desired_amp_total = lufs_multiplier(integrated, params.target_integrated);
-    let desired_max_amp = [desired_amp_inst, desired_amp_mom, desired_amp_total]
-        .into_iter()
-        .max_by(|x, y| x.abs().partial_cmp(&y.abs()).unwrap())
-        .unwrap_or(1.)
-        .min(max_amp);
-    // Average requested amp amts with max requested amp, to balance and hopefully not amp too much
-    // We add momentary amp twice because that's the most important one
+    let desired_amp_max_mom = lufs_multiplier(max_momentary, params.target_momentary);
+    let desired_amp_min_mom = lufs_multiplier(min_momentary, params.target_lower);
+    let desired_amp_integrated = lufs_multiplier(integrated, params.target_integrated);
     let amps = [
-        desired_amp_inst,
-        desired_amp_mom,
-        desired_amp_mom,
-        desired_amp_total,
-        desired_max_amp,
-    ];
-    let required_amp = (amps.into_iter().sum::<f32>() / amps.len() as f32).max(1.);
+        (desired_amp_inst, INSTANTANEOUS_ERROR_MULTIPLIER),
+        (desired_amp_min_mom, MIN_MOMENTARY_ERROR_MULTIPLIER),
+        (desired_amp_max_mom, MAX_MOMENTARY_ERROR_MULTIPLIER),
+        (desired_amp_integrated, INTEGRATED_ERROR_MULTIPLIER),
+    ]
+    .map(|(desired, mul)| (desired, mul.recip()));
+
+    // Weighted average based on the allowable error levels
+    let required_amp = (amps.map(|(d, m)| d * m).into_iter().sum::<f32>()
+        / amps.map(|(_, m)| m).into_iter().sum::<f32>())
+    .max(max_amp);
 
     println!("{compressed_stats}");
     println!("Required final amp: {:.1}dB", amp_to_db(required_amp));
