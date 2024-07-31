@@ -507,12 +507,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7a70ba024b9dc04c27ea2f0c0548feb474ec5c54bba33a7f72f873a39d07b24"
 
 [[package]]
-name = "lufs"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ede332fea0d816b71889523560e54ad832e54166c42d35075ac4abfb41b3b518"
-
-[[package]]
 name = "mach2"
 version = "0.4.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -579,7 +573,6 @@ dependencies = [
  "bs1770",
  "clap",
  "itertools 0.13.0",
- "lufs",
  "rodio",
  "tempfile",
 ]
