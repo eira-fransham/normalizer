@@ -1,10 +1,11 @@
-#![doc(include_str = "README.md")]
+#![doc = include_str!("../README.md")]
 
 use bs1770::{ChannelLoudnessMeter, Power, Windows100ms};
 use clap::Parser;
 use itertools::Itertools as _;
-use rodio::{decoder::DecoderError, source::Source, Decoder};
+use rodio::{cpal::FromSample, decoder::DecoderError, source::Source, Decoder};
 use std::{
+    cmp::Ordering,
     ffi::OsStr,
     fmt::Display,
     fs::{self, File},
@@ -24,21 +25,26 @@ struct Cli {
     #[arg(short, long)]
     output: Option<PathBuf>,
     /// Max interations to try (in case the loudness is still too far from the target)
-    #[arg(long, default_value_t = 2)]
+    /// 0 will disable normalization, and just convert the file.
+    #[arg(long, default_value_t = 1)]
     max_iterations: usize,
     /// Target integrated loudness (in LUFS)
     #[arg(long, default_value_t = -10.)]
     target_integrated: f32,
+    /// Frequency to hipass the input at for volume calculations (to normalize tracks with different levels of sub-bass)
+    // TODO: It appears the rodio hipass filter has some weird issues
+    #[arg(long, default_value_t = 100)]
+    hipass: u32,
     /// Target upper bound momentary loudness offset from upper bound (in LUFS)
-    #[arg(long, default_value_t = 1.)]
+    #[arg(long, default_value_t = 0.7)]
     momentary_offset: f32,
     /// Target instantaneous loudness offset from upper bound (in LUFS)
-    #[arg(long, default_value_t = 2.)]
+    #[arg(long, default_value_t = 1.)]
     instantaneous_offset: f32,
     /// Target lower bound momentary loudness (in LUFS)
-    #[arg(long, default_value_t = -18.)]
+    #[arg(long, default_value_t = -15.)]
     target_lower: f32,
-    #[arg(short, long, default_value_t = 0.1)]
+    #[arg(short, long, default_value_t = 0.12)]
     trim_amt: f32,
     #[arg(long, default_value_t = -0.1)]
     headroom: f32,
@@ -46,7 +52,7 @@ struct Cli {
     #[arg(short, long)]
     force: bool,
     /// If any of the volume levels are this far away from the target, we run the process again.
-    #[arg(long, default_value_t = 1.)]
+    #[arg(long, default_value_t = 1.5)]
     max_error: f32,
     /// If true, we always enable `dynaudnorm`
     #[arg(short, long)]
@@ -72,6 +78,8 @@ impl Cli {
             headroom: self.headroom,
             trim_amt: self.trim_amt,
             resample_ratio: self.resample_amt.max(1),
+            hipass: self.hipass,
+            max_error: self.max_error,
         }
     }
 
@@ -151,6 +159,7 @@ fn lufs_multiplier(current: f32, target: f32) -> f32 {
 
 #[derive(Debug, Copy, Clone, PartialEq)]
 struct Params {
+    max_error: f32,
     /// Target overall loudness
     target_integrated: f32,
     /// Target lower bound for momentary loudness
@@ -165,6 +174,8 @@ struct Params {
     trim_amt: f32,
     /// Ratio to upsample the audio to
     resample_ratio: u32,
+    /// Frequency to hipass the audio at for volume calculations
+    hipass: u32,
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -263,9 +274,67 @@ impl Display for Stats {
             "{} loudness range (instantaneous): {:.2}LUFS..{:.2}LUFS",
             self.name, self.min_instantaneous, self.max_instantaneous
         )?;
-        write!(f, "{} peak: {:.2}", self.name, self.peak)?;
+        write!(f, "{} peak: {:.2}dB", self.name, self.peak)?;
 
         Ok(())
+    }
+}
+
+fn make_mono<S: Source>(source: S, hipass: u32) -> Vec<f32>
+where
+    <S as Iterator>::Item: rodio::Sample,
+    f32: FromSample<<S as Iterator>::Item>,
+{
+    let channels = source.channels();
+    let source = rodio::source::ChannelVolume::new(
+        source.convert_samples(),
+        vec![1. / channels as f32; channels as usize],
+    );
+
+    if hipass > 0 {
+        source
+            .high_pass(hipass)
+            .chunks(channels as _)
+            .into_iter()
+            .filter_map(|mut chunk| chunk.nth(0))
+            .collect::<Vec<_>>()
+    } else {
+        source
+            .chunks(channels as _)
+            .into_iter()
+            .filter_map(|mut chunk| chunk.nth(0))
+            .collect::<Vec<_>>()
+    }
+}
+
+struct MonoSource {
+    inner: <Vec<f32> as IntoIterator>::IntoIter,
+    sample_rate: u32,
+}
+
+impl Iterator for MonoSource {
+    type Item = f32;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+impl Source for MonoSource {
+    fn current_frame_len(&self) -> Option<usize> {
+        None
+    }
+
+    fn channels(&self) -> u16 {
+        1
+    }
+
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    fn total_duration(&self) -> Option<std::time::Duration> {
+        None
     }
 }
 
@@ -274,16 +343,18 @@ fn stats<R: BufRead + Seek + Send + Sync + 'static>(
     file: R,
     trim_amt_loudness: f32,
     trim_amt_peak: f32,
+    hipass: u32,
 ) -> Result<Stats, DecoderError> {
     let source = Decoder::new(file)?;
     let sample_rate = source.sample_rate();
-    let channels = source.channels();
-    let mut mono =
-        rodio::source::ChannelVolume::new(source.convert_samples(), vec![0.5; channels as usize])
-            .chunks(channels as _)
-            .into_iter()
-            .filter_map(|mut chunk| chunk.nth(0))
-            .collect::<Vec<_>>();
+    let mut mono_full = make_mono(source, 0);
+    let mono = make_mono(
+        MonoSource {
+            inner: mono_full.clone().into_iter(),
+            sample_rate,
+        },
+        hipass,
+    );
     let mut loudness_meter = ChannelLoudnessMeter::new(sample_rate);
     loudness_meter.push(mono.iter().copied());
     let integrated = bs1770::gated_mean(loudness_meter.as_100ms_windows()).loudness_lkfs();
@@ -293,8 +364,8 @@ fn stats<R: BufRead + Seek + Send + Sync + 'static>(
     let (min_instantaneous, max_instantaneous) =
         get_rms_range(loudness_meter.as_100ms_windows(), 400, trim_amt_loudness);
 
-    let (low_peak, high_peak) = get_range_without_outliers(&mut mono, trim_amt_peak);
-    let peak = low_peak.abs().min(high_peak.abs());
+    let (low_peak, high_peak) = get_range_without_outliers(&mut mono_full, trim_amt_peak);
+    let peak = amp_to_db(low_peak.abs().min(high_peak.abs()));
 
     Ok(Stats {
         name,
@@ -314,6 +385,56 @@ fn process(
     output_file: &Path,
     dynaudnorm: bool,
 ) -> io::Result<ProcessResult> {
+    let Stats {
+        peak,
+        integrated,
+        min_momentary,
+        max_momentary,
+        max_instantaneous,
+        ..
+    } = stats(
+        "Input",
+        BufReader::new(File::open(&input_file)?),
+        params.trim_amt,
+        0.0001,
+        0,
+    )
+    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+    let result = ProcessResult {
+        integrated_error: integrated - params.headroom - params.target_integrated,
+        max_momentary_error: max_momentary - params.headroom - params.target_momentary,
+        min_momentary_error: min_momentary - params.headroom - params.target_lower,
+        instantaneous_error: max_instantaneous - params.headroom - params.target_instantaneous,
+    };
+
+    if result.within_acceptable_bounds(params.max_error) {
+        convert(None, input_file, output_file, false)?;
+        return Ok(result);
+    }
+
+    let normalized = temp_wav()?;
+
+    let amp = params.headroom - peak;
+
+    let peak_normalizer_result = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-stats",
+            "-i",
+            &format!("{}", input_file.display()),
+            "-filter_complex",
+            &format!("volume={amp}"),
+            &format!("{}", normalized.display()),
+        ])
+        .status()?;
+
+    if !peak_normalizer_result.success() {
+        eprintln!("Could not run limiter");
+    }
+
     let input_stats @ Stats {
         integrated,
         min_momentary,
@@ -321,52 +442,77 @@ fn process(
         min_instantaneous,
         max_instantaneous,
         sample_rate,
+        peak,
         ..
     } = stats(
         "Input",
-        BufReader::new(File::open(&input_file)?),
+        BufReader::new(File::open(&normalized)?),
         params.trim_amt,
         0.0001,
+        0,
     )
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    let required_amp = lufs_multiplier(integrated, params.target_instantaneous).max(1.);
-    let required_amp_db = amp_to_db(required_amp);
+    let result = ProcessResult {
+        integrated_error: integrated - params.headroom - params.target_integrated,
+        max_momentary_error: max_momentary - params.headroom - params.target_momentary,
+        min_momentary_error: min_momentary - params.headroom - params.target_lower,
+        instantaneous_error: max_instantaneous - params.headroom - params.target_instantaneous,
+    };
+
+    if result.within_acceptable_bounds(params.max_error) {
+        convert(None, &normalized, &output_file, false)?;
+        std::fs::remove_file(normalized).unwrap();
+        return Ok(result);
+    }
 
     println!("{input_stats}");
 
-    let compressed = NamedTempFile::new().unwrap().into_temp_path();
-    std::fs::remove_file(&compressed).unwrap();
-    let compressed = compressed.with_extension("wav");
+    let compressed = temp_wav()?;
 
-    let target_lower = params.target_lower;
-    let target_upper = params.target_integrated;
-    let target_instantaneous = params.target_instantaneous;
-
-    let headroom_amp = db_to_amp(params.headroom);
+    let headroom = params.headroom;
 
     let upsampled_rate = sample_rate * params.resample_ratio;
-    let input_path = format!("{}", input_file.display());
+    let input_path = format!("{}", normalized.display());
     let output_path = format!("{}", compressed.display());
+
     let lower_bound = min_momentary - 20.;
-    let lower_bound_mapped = required_amp_db + lower_bound;
-    let compressor_points = [
-        (lower_bound, lower_bound_mapped),
+    let max_instantaneous = max_instantaneous
+        .max(max_momentary + (params.target_instantaneous - params.target_momentary));
+    let integrated_mapped = if params.target_integrated < integrated {
+        let max_diff = 2.;
+        let integrated = integrated.min(params.target_integrated + max_diff);
+        let amount_more = integrated - params.target_integrated;
+        let half_life = 0.5;
+        let scale = max_diff / half_life;
+        let lerp = (amount_more / half_life).powi(2) / scale;
+        params.target_integrated + lerp * max_diff
+    } else {
+        params.target_integrated
+    };
+    let mut compressor_points = [
         (
             min_instantaneous,
-            target_lower - (params.target_integrated - integrated) * 0.25
-                + (target_instantaneous - target_upper),
+            params.target_lower * (min_instantaneous / min_momentary),
         ),
+        (min_momentary, params.target_lower),
+        (max_momentary, params.target_momentary),
         (
-            min_momentary,
-            target_lower + (params.target_integrated - integrated) * 0.5,
+            max_instantaneous,
+            params.target_instantaneous.max(max_instantaneous),
         ),
-        (max_momentary, target_upper),
-        (max_instantaneous, target_instantaneous),
+        (integrated, integrated_mapped),
+        (peak, 0.),
+        (peak + 20., 10.),
     ];
+
+    compressor_points.sort_unstable_by(|x, y| x.0.partial_cmp(&y.0).unwrap_or(Ordering::Equal));
+
     let mut last = (f32::NEG_INFINITY, f32::NEG_INFINITY);
     let compressor_points = compressor_points.into_iter().filter(|(left, right)| {
-        if *left > last.0 && *right > last.1 {
+        if !left.is_finite() || !right.is_finite() {
+            false
+        } else if *left > last.0 && *right > last.1 {
             last = (*left, *right);
             true
         } else {
@@ -375,13 +521,29 @@ fn process(
     });
     let (compressor_from, compressor_to): (Vec<_>, Vec<_>) = compressor_points.unzip();
     let compressor_points = compressor_from
-        .into_iter()
-        .zip(compressor_to)
+        .iter()
+        .copied()
+        .zip(compressor_to.iter().copied())
         .map(|(from, to)| format!("{from}/{to}"))
         .collect::<Vec<_>>();
+    let compressor_points_lesser = compressor_from
+        .into_iter()
+        .zip(compressor_to.iter().copied())
+        .map(|(from, to)| {
+            const LESSER_COMP_AMT: f32 = 0.5;
+            let to = to * LESSER_COMP_AMT + from * (1. - LESSER_COMP_AMT);
+            format!("{from}/{to}")
+        })
+        .collect::<Vec<_>>();
     let compressor_params = compressor_points.join("|");
+    let compressor_params_lesser = compressor_points_lesser.join("|");
     let mut compressor = Command::new("ffmpeg");
     let dynaudnorm_headroom = db_to_amp(-6.);
+    let dynaudnorm = if dynaudnorm {
+        String::new()
+    } else {
+        format!("dynaudnorm=g=97:m=1.5:r={dynaudnorm_headroom:.3}:o=0.1:c=1:b=1,")
+    };
     let compressor = compressor.args([
         "-hide_banner",
         "-loglevel",
@@ -390,17 +552,16 @@ fn process(
         "-i",
         &input_path,
         "-filter_complex",
-        &if dynaudnorm {
-            format!(
-                "aresample={upsampled_rate},compand=.3|.3:.3|.3:{compressor_params}:3:0.3:{lower_bound},\
-                dynaudnorm=g=97:m=1.5:r={dynaudnorm_headroom:.3}:o=0.1:c=1:b=1,aresample={sample_rate}"
-            )
-        } else {
-            format!("aresample={upsampled_rate},compand=.3|.3:.3|.3:{compressor_params}:3:0.3:{lower_bound},aresample={sample_rate}")
-        },
+        &format!(
+            "aresample={upsampled_rate},\
+                compand=attacks=1:decays=1:points=-90/-90|{compressor_params_lesser}:soft-knee=1:delay=.95:volume={lower_bound},\
+                compand=attacks=.3:decays=.2:points=-90/-90|{compressor_params}:soft-knee=1:delay=.2:volume={lower_bound},\
+                {dynaudnorm}\
+                aresample={sample_rate}"
+        ),
         &output_path,
     ]);
-    let limiter_result = compressor.status().unwrap();
+    let limiter_result = compressor.status()?;
     if !limiter_result.success() {
         eprintln!("Could not run limiter");
     }
@@ -410,18 +571,19 @@ fn process(
         max_momentary,
         min_instantaneous: _,
         max_instantaneous,
-        peak,
         sample_rate,
+        peak,
         ..
     } = stats(
         "Compressed",
         BufReader::new(File::open(&compressed)?),
         params.trim_amt,
-        0.0001,
+        0.05,
+        params.hipass,
     )
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
-    let max_amp = 1. / (peak * headroom_amp);
+    let max_amp = db_to_amp(-peak);
     let desired_amp_inst = lufs_multiplier(max_instantaneous, params.target_instantaneous);
     let desired_amp_max_mom = lufs_multiplier(max_momentary, params.target_momentary);
     let desired_amp_min_mom = lufs_multiplier(min_momentary, params.target_lower);
@@ -437,10 +599,10 @@ fn process(
     // Weighted average based on the allowable error levels
     let required_amp = (amps.map(|(d, m)| d * m).into_iter().sum::<f32>()
         / amps.map(|(_, m)| m).into_iter().sum::<f32>())
-    .max(max_amp);
+    .min(max_amp);
 
     println!("{compressed_stats}");
-    println!("Required final amp: {:.1}dB", amp_to_db(required_amp));
+    println!("Required final amp: {:.2}dB", amp_to_db(required_amp));
 
     if let Ok(()) = std::fs::remove_file(output_file) {
         eprintln!("Warning: output file already exists");
@@ -457,16 +619,24 @@ fn process(
             &format!("{}", compressed.display()),
             "-filter_complex",
             &format!(
-                "volume={required_amp},aresample={upsampled_rate},compand=attacks=0.01:points=-80/-80|-12.4/-12.4|0/0|20/0:soft-knee=2:delay=0.01,compand=attacks=0:points=-80/-80|-12.4/-12.4|-2/-1|-1/-0.5|0/0|20/0,aresample={sample_rate},volume={headroom_amp}",
+                "volume={required_amp},\
+                    aresample={upsampled_rate},\
+                    compand=attacks=0.7:points=-80/-80|-12.4/-12.4|-1.5/-3|-1/-2|0/0|20/10:soft-knee=1:delay=0.3,\
+                    compand=attacks=0.2:points=-80/-80|-12.4/-12.4|0/0|20/5:soft-knee=0.5:delay=0.1,\
+                    compand=attacks=0.01:points=-80/-80|-12.4/-12.4|-1/-1.5|-0.5/-0.75|0/0|20/0:delay=0.01,\
+                    compand=attacks=0:points=-80/-80|-12.4/-12.4|0/0|20/0,\
+                    aresample={sample_rate},
+                    volume={headroom}dB",
             ),
             &format!("{}", output_file.display()),
         ]);
 
-    let normalizer_result = limiter.status().unwrap();
+    let normalizer_result = limiter.status()?;
     if !normalizer_result.success() {
         eprintln!("Could not run limiter");
     }
 
+    std::fs::remove_file(normalized).unwrap();
     std::fs::remove_file(compressed).unwrap();
 
     let Stats {
@@ -482,6 +652,7 @@ fn process(
         BufReader::new(File::open(output_file)?),
         params.trim_amt,
         0.0001,
+        0,
     )
     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
@@ -490,9 +661,9 @@ fn process(
         integrated - params.headroom
     );
     println!(
-        "Final peak: {:.2} (true) {:.2} (adjusted)",
+        "Final peak: {:.2}dB (true) {:.2}dB (adjusted)",
         peak,
-        peak / headroom_amp
+        peak - params.headroom,
     );
     println!(
         "Final adjusted loudness range (momentary): {:.2}LUFS..{:.2}LUFS",
@@ -544,7 +715,7 @@ fn convert(metadata: Option<&Path>, input: &Path, output: &Path, force: bool) ->
             "-map",
             "0:a",
             "-map",
-            "1:v",
+            "1:v?",
             "-id3v2_version",
             "3",
             "-write_id3v2",
@@ -575,7 +746,9 @@ fn convert(metadata: Option<&Path>, input: &Path, output: &Path, force: bool) ->
 
 // Some flac files seem to not be supported by `rodio`, so we convert to wav for safety
 fn file_extension_always_supported(extension: Option<&OsStr>) -> bool {
-    extension == Some("wav".as_ref()) || extension == Some("mp3".as_ref())
+    extension == Some("wav".as_ref())
+        || extension == Some("mp3".as_ref())
+        || extension == Some("flac".as_ref())
 }
 
 fn main() {
@@ -646,6 +819,7 @@ fn main() {
             BufReader::new(File::open(&cli.file).unwrap()),
             cli.trim_amt,
             0.0001,
+            cli.hipass,
         )
         .unwrap();
 
