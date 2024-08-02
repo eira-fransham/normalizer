@@ -338,6 +338,11 @@ impl Source for MonoSource {
     }
 }
 
+#[cfg(not(target_os = "windows"))]
+const FFMPEG: &str = "ffmpeg";
+#[cfg(target_os = "windows")]
+const FFMPEG: &str = "ffmpeg.exe";
+
 fn stats<R: BufRead + Seek + Send + Sync + 'static>(
     name: &'static str,
     file: R,
@@ -417,7 +422,7 @@ fn process(
 
     let amp = params.headroom - peak;
 
-    let peak_normalizer_result = Command::new("ffmpeg")
+    let peak_normalizer_result = Command::new(FFMPEG)
         .args([
             "-hide_banner",
             "-loglevel",
@@ -537,7 +542,7 @@ fn process(
         .collect::<Vec<_>>();
     let compressor_params = compressor_points.join("|");
     let compressor_params_lesser = compressor_points_lesser.join("|");
-    let mut compressor = Command::new("ffmpeg");
+    let mut compressor = Command::new(FFMPEG);
     let dynaudnorm_headroom = db_to_amp(-6.);
     let dynaudnorm = if dynaudnorm {
         String::new()
@@ -608,7 +613,7 @@ fn process(
         eprintln!("Warning: output file already exists");
     }
 
-    let mut limiter = Command::new("ffmpeg");
+    let mut limiter = Command::new(FFMPEG);
     let upsampled_rate = sample_rate * params.resample_ratio;
     let limiter = limiter.args([
             "-hide_banner",
@@ -691,7 +696,7 @@ fn temp_wav() -> io::Result<PathBuf> {
 }
 
 fn convert(metadata: Option<&Path>, input: &Path, output: &Path, force: bool) -> io::Result<()> {
-    let mut converter = Command::new("ffmpeg");
+    let mut converter = Command::new(FFMPEG);
 
     let mut converter = if force {
         converter.arg("-y")
