@@ -1,6 +1,6 @@
 [package]
 name = "normalizer"
-version = "0.1.4"
+version = "0.1.5"
 edition = "2021"
 description = "Automatic remastering CLI program intended for DJs who play a lot of different genres or older tracks that have inconsistent masters"
 license = "MIT"
